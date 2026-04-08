@@ -81,7 +81,6 @@
             z-index: 50;
         }
 
-        /* Animation for Key Input */
         .fade-in {
             animation: fadeIn 0.5s ease-out forwards;
         }
@@ -95,7 +94,16 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
+
+        // --- API Keys Management ---
+        // ဤနေရာတွင် သင်၏ API Key များကို တစ်ခုထက်ပို၍ ထည့်ထားနိုင်ပါသည်။ 
+        // Array ထဲသို့ စာကြောင်းများအဖြစ် ထည့်ပါ။
+        const SYSTEM_API_KEYS = [
+            "YOUR_API_KEY_1",
+            "YOUR_API_KEY_2",
+            "YOUR_API_KEY_3"
+        ];
 
         const VOICES = [
             { id: 'Kore', name: 'Kyi Pyar', label: 'ကြည်ပြာ (Female)', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=KyiPyar' },
@@ -109,12 +117,15 @@
         ];
 
         function App() {
-            // Security State
+            // Security & Config State
             const [apiKey, setApiKey] = useState("");
             const [isAuthorized, setIsAuthorized] = useState(false);
             const [tempKey, setTempKey] = useState("");
+            
+            // Key Rotation Tracking
+            const keyIndex = useRef(0);
 
-            // Original State
+            // Studio State
             const [mode, setMode] = useState('solo');
             const [blocks, setBlocks] = useState([{ 
                 id: Date.now(), 
@@ -129,12 +140,26 @@
             const [fullAudio, setFullAudio] = useState(null);
             const [fullLoading, setFullLoading] = useState(false);
 
+            // Handle Authorization
             const handleLogin = (e) => {
                 e.preventDefault();
+                // If user provides their own key
                 if (tempKey.trim().length > 10) {
                     setApiKey(tempKey);
                     setIsAuthorized(true);
+                } else if (SYSTEM_API_KEYS.length > 0 && SYSTEM_API_KEYS[0] !== "YOUR_API_KEY_1") {
+                    // Use system keys if they are pre-configured
+                    setApiKey(SYSTEM_API_KEYS[0]);
+                    setIsAuthorized(true);
                 }
+            };
+
+            // Get Current Rotating Key
+            const getNextKey = () => {
+                if (tempKey) return tempKey; // User manually entered key
+                const currentKey = SYSTEM_API_KEYS[keyIndex.current];
+                keyIndex.current = (keyIndex.current + 1) % SYSTEM_API_KEYS.length;
+                return currentKey;
             };
 
             const convertToWav = (pcmData) => {
@@ -161,7 +186,8 @@
             };
 
             const generateTTSChunk = async (text, voiceId) => {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`, {
+                const activeKey = getNextKey();
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${activeKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -172,8 +198,16 @@
                         }
                     })
                 });
+                
                 const data = await response.json();
-                if (data.error) throw new Error(data.error.message);
+                
+                if (data.error) {
+                    if (data.error.message.includes("quota") || data.error.code === 429) {
+                        throw new Error("အသုံးပြုသူများနေပါသဖြင့် (၃၀) စက္ကန့်ခန့်စောင့်ပြီးမှ ပြန်လည်ကြိုးစားပေးပါ။");
+                    }
+                    throw new Error(data.error.message);
+                }
+                
                 const b64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
                 if (!b64) return null;
                 const bin = atob(b64);
@@ -203,7 +237,6 @@
                     }
                 } catch (e) {
                     setBlocks(prev => prev.map(x => x.id === id ? { ...x, loading: false, previewLoading: false, error: e.message } : x));
-                    console.error("TTS Error:", e);
                 }
             };
 
@@ -235,6 +268,7 @@
                     const wavBlob = convertToWav(fullPcm);
                     setFullAudio(URL.createObjectURL(wavBlob));
                 } catch (e) {
+                    // Global error for cinematic mode
                     console.error(e);
                 } finally {
                     setFullLoading(false);
@@ -280,7 +314,6 @@
                 );
             }
 
-            // Original Studio UI
             return (
                 <div className="max-w-xl mx-auto min-h-screen p-4 pb-48 fade-in">
                     <header className="flex flex-col items-center py-10 gap-4">
@@ -302,7 +335,7 @@
                     </div>
 
                     <div className="space-y-6">
-                        {blocks.map((b, index) => (
+                        {blocks.map((b) => (
                             <div key={b.id} className="glass-card p-6 relative">
                                 <div className="flex items-center justify-between mb-5">
                                     <div className="flex items-center gap-3">
@@ -333,7 +366,11 @@
                                         value={b.text}
                                         onChange={(e) => setBlocks(blocks.map(x => x.id === b.id ? {...x, text: e.target.value} : x))}
                                     />
-                                    {b.error && <p className="text-[10px] text-red-500 font-bold uppercase">{b.error}</p>}
+                                    {b.error && (
+                                        <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-xl">
+                                            <p className="text-[10px] text-red-500 font-bold uppercase leading-relaxed">{b.error}</p>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {mode === 'solo' && (
@@ -342,7 +379,7 @@
                                         <button 
                                             onClick={() => generateSoloTTS(b.id)}
                                             disabled={b.loading || !b.text.trim()}
-                                            className="w-full py-4 green-gradient text-black font-black uppercase text-[10px] rounded-xl active:scale-95"
+                                            className="w-full py-4 green-gradient text-black font-black uppercase text-[10px] rounded-xl active:scale-95 transition-all disabled:opacity-50"
                                         >
                                             {b.loading ? "Generating..." : "Generate Solo Audio"}
                                         </button>
@@ -362,7 +399,7 @@
                             </div>
                         ))}
 
-                        <button onClick={() => setBlocks([...blocks, { id: Date.now(), text: '', voice: VOICES[0], audio: null, loading: false, previewLoading: false }])} className="w-full py-5 border-2 border-dashed border-zinc-900 rounded-2xl text-zinc-600 text-[10px] font-black uppercase tracking-widest">
+                        <button onClick={() => setBlocks([...blocks, { id: Date.now(), text: '', voice: VOICES[0], audio: null, loading: false, previewLoading: false, error: null }])} className="w-full py-5 border-2 border-dashed border-zinc-900 rounded-2xl text-zinc-600 text-[10px] font-black uppercase tracking-widest hover:border-zinc-700 transition-colors">
                             + Add Dialogue Line
                         </button>
                     </div>
